@@ -1,3 +1,9 @@
+;;; ---------------------------------------------------------------------------------------
+;;; リクエストパラメータをデコードする
+;;; ---------------------------------------------------------------------------------------
+
+;;; リクエストパラメータのデコーダ(ASCIIコードのみ対応) -----------------------------------
+
 (defun http-char (c1 c2 &optional (default #\Space))
   "16進数で表されたASCIIコードをデコードする
    c1: 2桁目の数値となる文字
@@ -33,6 +39,8 @@
     ;; リストの要素を文字列として結合する
     (coerce (f (coerce s 'list)) 'string)))
 
+
+;;; リクエストパラメータのデコーダ(マルチバイト文字対応) -----------------------------------
 
 ;; 文字ごとではなく、バイトごとにデコードする(URLの正式なエンコーディング準拠)
 (defun http-byte (c1 c2 &optional (default #\Space))
@@ -71,11 +79,17 @@
       charset:utf-8)))
 
 
+;;; リクエストパラメータのデコーダ --------------------------------------------------------
+
 (defun decode-param (s)
   (let ((param-enc :ja))
     (cond ((equal param-enc :en) (decode-param-en s))
           ((equal param-enc :ja) (decode-param-ja s)))))
 
+
+;;; ---------------------------------------------------------------------------------------
+;;; ソケットの文字コードを設定する
+;;; ---------------------------------------------------------------------------------------
 
 ;;; charsetには下記などが使える。
 ;;; charset:utf-8
@@ -89,6 +103,13 @@
 ;; `serve`コマンド（後述）を起動する前に、REPL上で次のコマンドを実行すること。
 (setf *default-file-encoding* charset:utf-8)
 
+
+;;; ---------------------------------------------------------------------------------------
+;;; HTTPリクエストラインからURLを、HTTPリクエストヘッダからヘッダを取り出す
+;;; HTTPリクエストボディからパラメータを取り出す
+;;; ---------------------------------------------------------------------------------------
+
+;;; リクエストパラメータのalistを作る -----------------------------------------------------
 
 (defun parse-params (s)
   "リクエストパラメータのalistを返す
@@ -104,8 +125,10 @@
           (t s))))	; リクエストパラメータの書式ではない文字列の場合、文字列をそのまま返す
 
 
+;;; HTTPリクエストヘッダをパースする ------------------------------------------------------
+
 (defun parse-request-line (s)
-  "リクエストヘッダのリクエストラインからURLを取り出す
+  "HTTPリクエストヘッダのリクエストラインからURLを取り出す
    s: リクエストライン
    ret: url本体部とリクエストパラメータ部とのコンスセル"
   (let* ((url (subseq s
@@ -118,7 +141,7 @@
 
 
 (defun get-header (stream)
-  "リクエストヘッダのHTTPヘッダフィールドからリクエストパラメータを返す
+  "HTTPリクエストヘッダのHTTPヘッダフィールドからリクエストパラメータを返す
    stream: HTTPヘッダフィールド
    ret: リクエストパラメータと値とのコンスセル"
   (let* ((s (read-line stream))  ; 入力ストリームから得た文字列1行分
@@ -132,8 +155,10 @@
       (cons h (get-header stream)))))
 
 
+;;; HTTPリクエストボディをパースする ------------------------------------------------------
+
 (defun get-content-params (stream header)
-  "リクエストヘッダの後にあるリクエストボディから、パラメータを取り出す
+  "HTTPリクエストボディから、リクエストパラメータを取り出す
    stream: ストリーム
    header: HTTPヘッダフィールドの連想リスト"
   (let ((length (cdr (assoc 'content-length header))))  ; HTTPヘッダフィールドからコンテンツの長さを取得する
@@ -143,6 +168,39 @@
         (read-sequence content stream)  ; ストリームからデータを読み込んで、contentを満たす
         (parse-params content)))))      ; リクエストパラメータの連想リストを作る
 
+
+;;; ---------------------------------------------------------------------------------------
+;;; リクエストを受け付ける
+;;; ---------------------------------------------------------------------------------------
+
+;;; クライアントからのリクエストを受け付ける ----------------------------------------------
+
+(defun response-status-line (path header params)
+  "HTTPレスポンスステータスラインを出力する
+   path: URLのパス部分
+   header: HTTPヘッダフィールド
+   params: URL末尾(GET用)とリクエストボディ(POST用)のリクエストパラメータ"
+  (declare (ignore path)
+           (ignore header)
+           (ignore params))
+  (princ "HTTP/1.1 200 OK"))
+
+(defun response-header (path header params)
+  "HTTPレスポンスヘッダを出力する
+   path: URLのパス部分
+   header: HTTPヘッダフィールド
+   params: URL末尾(GET用)とリクエストボディ(POST用)のリクエストパラメータ"
+  (declare (ignore path)
+           (ignore header)
+           (ignore params))
+  ;; Google Chromeで受け付ける程度のヘッダ内容を出力する
+  ;; 時刻などは適当
+  (princ "Server: lispserver
+Date: Tue, 11 Jul 2017 09:23:07 GMT
+Content-Type: text/html
+Connection: none
+
+"))
 
 (defun serve (request-handler)
   "request-handler: リクエストハンドラ。解析したリクエストを使う。"
@@ -155,17 +213,20 @@
                      (params (append (cdr url)     ; URL末尾(GET用)とリクエストボディ(POST用)のリクエストパラメータ
                                      (get-content-params stream header)))
                      (*standard-output* stream))   ; ストリームを標準出力に設定
-                (funcall request-handler path header params))))  ; 
+                (response-status-line path header params)       ; レスポンスステータスライン
+                (response-header path header params)            ; レスポンスヘッダ
+                (funcall request-handler path header params)))) ; レスポンスのボディ
       (socket-server-close socket))))
 
+
+;;; レスポンスボディを出力する ------------------------------------------------------------
 
 (defun hello-request-handler (path header params)
   "名前を問いかけて、得られたその名前を使って挨拶する
    CAUTION! リクエストパラメータをサニタイズしていないため、WANでの使用不可
    path: URLのパス部分
    header: HTTPヘッダフィールド
-   params: URL末尾(GET用)とリクエストボディ(POST用)のリクエストパラメータ
-   ret: レスポンスするHTMLドキュメント"
+   params: URL末尾(GET用)とリクエストボディ(POST用)のリクエストパラメータ"
   (declare (ignore header))  ; 本関数ではHTTPヘッダフィールドは無視する
   ;; "/greeting"ページのみ提供する
   (if (equal path "greeting")
